@@ -1,0 +1,86 @@
+from netmiko import ConnectHandler
+from jinja2 import FileSystemLoader, Environment
+import re
+from rstr import Rstr
+from random import SystemRandom
+ 
+ 
+# parse the raw show ip int brief output into dictionary.
+def show_ip_int_brief(cmd_output):
+    interfaces = []
+    intf_pattern = "^[lLgGeEfFtT]\S+[0-9]/?[0-9]*"
+    regex = re.compile(intf_pattern)
+    for row in cmd_output.splitlines():
+        if regex.search(row):
+            interfaces.append(
+                {'interface': row.split()[0],
+                 'ip_address': row.split()[1],
+                 'ok': row.split()[2],
+                 'method': row.split()[3],
+                 'status': row.split()[4],
+                 'protocol': row.split()[5]}
+            )
+    return interfaces
+ 
+# compile the device from the devices_list.txt
+def device_info(device, username, password):
+    return {
+        'device_type': 'cisco_ios',
+        'ip': device,
+        'username': username,
+        'password': password
+    }
+ 
+ 
+# random string generator for OSPF auth key
+def ospf_auth_generator():
+    rgen = Rstr(SystemRandom())
+    pattern = r"[0-9a-zA-Z]{8}"
+    return rgen.xeger(pattern)
+ 
+ 
+# read and store the devices_list.txt
+with open('devices_list.txt', "r") as file:
+    devices_list = file.read()
+ 
+# read and store the network_list.
+with open('network_list', 'r') as file:
+    network_list = file.read()
+ 
+# testing starts from here...
+if __name__ == "__main__":
+    # tell jinja2 to look for a template file in templates folder.
+    file_loader = FileSystemLoader('templates')
+    env = Environment(loader=file_loader)
+    # tell jinja2 to use the ospf.txt template file.
+    config_template = env.get_template('ospf.txt')
+    print("----loading ospf best practice template----\n")
+    # pre-generate the ospf auth key for rendering...
+    ospf_auth = ospf_auth_generator()
+    print("----generating authentication key for ospf peers----\n")
+    # configure OSPF for one device after another.
+    for device in devices_list.splitlines():
+        print(f"----Trying connecting to {device}, wish me luck...----\n")
+        # this is a demo, in production username and password should be handled outside the code.
+        ios = device_info(device, 'cisco', 'cisco')
+        conn = ConnectHandler(**ios)
+        print(f"----I have got in {device}----\n")
+        print(f"----Trying hard to gather some information from {device}----\n")
+        output = conn.send_command("show ip int brief")
+        interfaces = show_ip_int_brief(output)
+        print(f"----Interface information has been gathered---\n")
+        for interface in interfaces:
+            for network in network_list.splitlines():
+                if interface.get('ip_address') == network:
+                    print("----Preparing for the OSPF best practice, wish me luck----\n")
+                    # insert all required values into the template.
+                    cmd_set = config_template.render(router_id=interface.get('ip_address'),
+                                           interface_ip=interface.get('ip_address'),
+                                           intf_id=interface.get('interface'),
+                                           random_string=ospf_auth)
+                    print(cmd_set)
+                    # use send_config_set if there is a huge list of commands.
+                    # cannot use the ospf.txt with send_config_file as the ospf.txt is a template.
+                    # rendering is done in memory and the template will still be unchanged.
+                    conn.send_config_set(cmd_set, delay_factor=2)
+                    print("Configured for {}".format(device))
